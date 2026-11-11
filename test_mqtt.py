@@ -11,9 +11,10 @@ import threading
 import time
 import unittest
 
-from mqtt_core import (MqttClient, MqttError, MqttSubscriber, PacketReader, load_settings,
-                       numeric_fields, packet, parse_filters, parse_reading, parse_time, payload_text,
-                       reading_fields, save_settings, series_label, topic_matches)
+from mqtt_core import (MqttClient, MqttCsvLogger, MqttError, MqttSubscriber, PacketReader, is_mqtt_log,
+                       load_settings, numeric_fields, packet, parse_filters, parse_reading, parse_time,
+                       payload_text, read_mqtt_logs, reading_fields, save_settings, series_label,
+                       topic_matches)
 from mqtt_sim import STATION_SOURCES, TOPICS, SimBroker, SimDevices, SimStation
 from station_spec import (MQ_SOURCES, SENSOR_TABS, assess, details, is_large, label, line_gap,
                           shared_keys, source_title, unit)
@@ -328,6 +329,52 @@ class SettingsTests(unittest.TestCase):
             with open(path, "w") as fh:
                 fh.write("not json")
             self.assertEqual(load_settings(path)["host"], "localhost")
+
+
+class LogImportTests(unittest.TestCase):
+    READING = json.dumps({"station": "s1", "source": "co2", "ts": "2026-11-11T10:00:00.250+00:00",
+                          "values": {"co2_ppm": 600}})
+
+    def test_reads_back_what_was_logged(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = MqttCsvLogger(d, "broker.lan")
+            t0 = time.mktime((2026, 11, 11, 23, 59, 58, 0, 0, -1))
+            log.write(t0, "sim/power/voltage", False, "230.5")
+            log.write(t0 + 1, "measure-station/s1/co2", False, self.READING)     # commas and quotes
+            log.write(t0 + 3, "sim/status", True, "online")                      # next day's file
+            log.close()
+            paths = sorted(os.path.join(d, f) for f in os.listdir(d))
+            self.assertEqual(len(paths), 2)
+            self.assertTrue(all(is_mqtt_log(p) for p in paths))
+            with open(paths[0], "a", encoding="utf-8", newline="") as fh:
+                fh.write("garbled,row\r\n")
+            msgs, skipped = read_mqtt_logs(paths[::-1] + paths[:1])   # out of order, one twice
+        self.assertEqual(skipped, 1)
+        self.assertEqual([m[1:] for m in msgs], [("sim/power/voltage", False, "230.5"),
+                                                 ("measure-station/s1/co2", False, self.READING),
+                                                 ("sim/status", True, "online")])
+        self.assertEqual([m[0] - t0 for m in msgs], [0, 1, 3])
+        self.assertEqual(parse_reading(msgs[1][3])["values"], {"co2_ppm": 600})
+
+    def test_spreadsheet_resave_and_other_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            resaved = os.path.join(d, "resaved.csv")
+            with open(resaved, "w", encoding="utf-8-sig", newline="") as fh:
+                csv.writer(fh, delimiter=";").writerows([
+                    ["pc_time", "topic", "retained", "payload"],
+                    ["13/11/2026 09:05", "a/b", "0", '{"x": 1, "y": 2}']])
+            other = os.path.join(d, "mqb.csv")
+            with open(other, "w") as fh:
+                fh.write("pc_time,board_time_est,sensor,gas,t_s,ppm\r\n")
+            self.assertTrue(is_mqtt_log(resaved))
+            self.assertFalse(is_mqtt_log(other))
+            self.assertFalse(is_mqtt_log(os.path.join(d, "missing.csv")))
+            msgs, skipped = read_mqtt_logs([resaved])
+            with self.assertRaisesRegex(ValueError, "not an MQTT CSV log"):
+                read_mqtt_logs([other])
+        self.assertEqual((len(msgs), skipped), (1, 0))
+        self.assertEqual(time.localtime(msgs[0][0])[:5], (2026, 11, 13, 9, 5))
+        self.assertEqual(numeric_fields(msgs[0][3]), {"x": 1.0, "y": 2.0})
 
 
 if __name__ == "__main__":

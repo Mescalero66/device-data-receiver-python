@@ -113,7 +113,13 @@ def run_gui(args):
     from matplotlib.figure import Figure
     from matplotlib.lines import Line2D
     from modbus_tab import ModbusTab
+    from mqtt_core import is_mqtt_log
     from mqtt_tab import MqttTab
+
+    # CSV logs given on the command line (or dropped onto run.bat) go to the
+    # tab that wrote them: MQTT logs to the MQTT tab, the rest to UART.
+    mqtt_csv = [p for p in args.csv if is_mqtt_log(p)]
+    args.csv = [p for p in args.csv if p not in mqtt_csv]
 
     class UartTab(TabBase):
         def __init__(self, root, frame, notebook):
@@ -539,12 +545,13 @@ def run_gui(args):
             ModbusTab(root, modbus_frame, notebook, args.out, args.modbus_settings,
                       connect=args.modbus, sim=args.modbus_sim),
             MqttTab(root, mqtt_frame, notebook, args.out, args.mqtt_settings,
-                    connect=args.mqtt, sim=args.mqtt_sim)]
-    # Show the tab that was asked to connect; UART first, then Modbus, then MQTT.
+                    connect=args.mqtt, sim=args.mqtt_sim, csv=mqtt_csv)]
+    # Show the tab that was asked to connect or given logs; UART first, then
+    # Modbus, then MQTT.
     if not (args.sim or args.port or args.csv):
         if args.modbus or args.modbus_sim:
             notebook.select(modbus_frame)
-        elif args.mqtt or args.mqtt_sim:
+        elif args.mqtt or args.mqtt_sim or mqtt_csv:
             notebook.select(mqtt_frame)
 
     def close():

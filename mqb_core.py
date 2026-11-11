@@ -308,6 +308,8 @@ def read_csv_logs(paths):
                                 delimiter=";" if header.count(";") > header.count(",") else ",")
         reader.fieldnames = [f.strip() for f in reader.fieldnames or ()]
         missing = {"pc_time", "sensor", "t_s", "ppm"} - set(reader.fieldnames)
+        if missing and {"topic", "payload"} <= set(reader.fieldnames):
+            raise ValueError("%s is an MQTT log: import it from the MQTT tab" % os.path.basename(path))
         if missing:
             raise ValueError("%s is not an MQB CSV log (no %s column)"
                              % (os.path.basename(path), ", ".join(sorted(missing))))

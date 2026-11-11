@@ -19,7 +19,8 @@ import threading
 import time
 from datetime import datetime
 
-from mqb_core import DailyFile, _fmt_time
+from mqb_core import DailyFile, _day_first, _fmt_time
+from mqb_core import parse_time as parse_pc_time
 
 # Packet types (the high nibble of the first byte)
 CONNECT, CONNACK, PUBLISH, PUBACK, PUBREC, PUBREL, PUBCOMP = 1, 2, 3, 4, 5, 6, 7
@@ -421,6 +422,61 @@ class MqttCsvLogger:
 
     def close(self):
         self.daily.close()
+
+
+def _log_delimiter(header):
+    return ";" if header.count(";") > header.count(",") else ","
+
+
+def is_mqtt_log(path):
+    """Whether a file starts with an MQTT CSV log's header (topic and payload columns)."""
+    try:
+        with open(path, newline="", encoding="utf-8-sig", errors="replace") as fh:
+            header = fh.readline()
+    except OSError:
+        return False
+    cols = {c.strip() for c in header.strip().split(_log_delimiter(header))}
+    return {"pc_time", "topic", "payload"} <= cols
+
+
+def read_mqtt_logs(paths):
+    """Messages back from CSV logs written by MqttCsvLogger, to replay onto the charts.
+
+    Returns (messages, skipped): messages is [(pc_time, topic, retained, text)]
+    in time order from all the files, each row once even if a file is given
+    twice; skipped counts rows that could not be read. Also reads a log a
+    spreadsheet has re-saved (other date styles, ';' separators, a byte order
+    mark). Raises ValueError for a file that is not an MQTT CSV log.
+    """
+    csv.field_size_limit(max(csv.field_size_limit(), MAX_PACKET))   # payloads can be long
+    seen, skipped = {}, 0       # a dict keeps file order for rows logged in the same second
+    for path in dict.fromkeys(os.path.normcase(os.path.abspath(p)) for p in paths):
+        name = os.path.basename(path)
+        with open(path, newline="", encoding="utf-8-sig", errors="replace") as fh:
+            header = fh.readline()
+            fh.seek(0)
+            reader = csv.DictReader(fh, delimiter=_log_delimiter(header))
+            reader.fieldnames = [f.strip() for f in reader.fieldnames or ()]
+            missing = {"pc_time", "topic", "payload"} - set(reader.fieldnames)
+            if missing:
+                raise ValueError("%s is not an MQTT CSV log (no %s column)"
+                                 % (name, ", ".join(sorted(missing))))
+            try:
+                rows = list(reader)
+            except csv.Error as e:
+                raise ValueError("%s: %s" % (name, e)) from None
+        day_first = _day_first(r["pc_time"] for r in rows)
+        for r in rows:
+            try:
+                t = parse_pc_time(r["pc_time"], day_first)
+                topic, text = r["topic"].strip(), r["payload"]
+                if not topic or text is None:
+                    raise ValueError("short row")
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                skipped += 1
+                continue
+            seen[(t, topic, (r.get("retained") or "").strip() == "1", text)] = None
+    return sorted(seen, key=lambda m: m[0]), skipped
 
 
 # --- subscriber -----------------------------------------------------------------

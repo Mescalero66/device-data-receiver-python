@@ -45,6 +45,8 @@ Double-click `run.bat`, or:
     python mqb_receiver.py --modbus-sim         # Modbus tab on a simulated sensor
     python mqb_receiver.py --mqtt               # also subscribe to the saved MQTT broker
     python mqb_receiver.py --mqtt-sim           # MQTT tab on a simulated broker
+    python mqb_receiver.py data\mqtt_localhost_2026-11-11.csv data\mqtt_localhost_2026-11-12.csv
+                                                # MQTT tab showing an overnight log
 
 Other options: `--raw` also logs every received line verbatim; `--out DIR`
 changes the log folder (default `data/`); `--sim-speed N` speeds up the simulator.
@@ -144,8 +146,19 @@ receiving, logging and charting whichever tab is showing.
    asks the broker to resend messages that were not acknowledged; 0 is usual.
    Then **Connect**.
 3. Choose the **Station** to show (the first one heard from is chosen for
-   you). **Show**, **Fix axis**, **Clear charts** and **Events** apply to every
-   page.
+   you). **Show**, **Fix axis**, **Import CSV...**, **Clear charts** and
+   **Events** apply to every page.
+
+### Viewing earlier MQTT logs
+
+*Import CSV...* (or `mqtt_*.csv` paths on the command line, or dropped onto
+`run.bat`) replays logged messages onto every page, with or without a broker
+connected, exactly as if they had just arrived. Select several files at once,
+e.g. the two days of an overnight run. Readings are plotted at the time they
+were taken, a message already on the charts (e.g. importing today's log while
+connected) is not added twice, and the chart window widens to fit. A logged
+station status (online/offline) is used only while not connected. Imported
+data only goes on the charts; it is never written back to the logs.
 
 ### Sensor and System health pages
 
@@ -260,7 +273,7 @@ later, whatever the graph setup was.
 | `mqtt_tab.py`      | the MQTT tab: connection, shared controls, stored data, and the Custom page |
 | `station_view.py`  | a sensor or System health page under the MQTT tab              |
 | `station_spec.py`  | what the Measure Station sends: pages, names and units, status rules |
-| `mqtt_core.py`     | MQTT client, topic filters, payload numbers, subscriber thread, CSV log, settings |
+| `mqtt_core.py`     | MQTT client, topic filters, payload numbers, subscriber thread, CSV log and import, settings |
 | `mqtt_sim.py`      | simulated broker and devices (`python mqtt_sim.py` serves it on port 1884) |
 | `test_mqb.py`      | tests, including every example in INTERFACE.md: `python -m unittest -v` |
 | `test_modbus.py`   | Modbus tests, run against the simulated sensor over real sockets |

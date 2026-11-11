@@ -15,7 +15,7 @@ import queue
 import time
 import tkinter as tk
 from datetime import datetime
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
@@ -23,8 +23,9 @@ from matplotlib.lines import Line2D
 
 from gui_common import (CATEGORICAL, CRITICAL, DASHES, INK_2, MUTED, PAGE, SERIES, SURFACE, WINDOWS,
                         TabBase)
-from mqtt_core import (MAX_GRAPHS, UNITS, MqttSubscriber, is_number, load_settings, parse_filters,
-                       save_settings, series_label, topic_matches)
+from mqtt_core import (MAX_GRAPHS, UNITS, MqttSubscriber, is_number, load_settings, numeric_fields,
+                       parse_filters, parse_reading, read_mqtt_logs, reading_fields, save_settings,
+                       series_label, topic_matches)
 from station_spec import DEFAULT_INTERVAL, HEALTH_TAB, KNOWN_SOURCES, SENSOR_TABS, ago, line_gap
 from station_view import SensorView
 
@@ -34,7 +35,7 @@ NONE = "(none)"
 
 
 class MqttTab(TabBase):
-    def __init__(self, root, frame, notebook, out, settings_path, connect=False, sim=False):
+    def __init__(self, root, frame, notebook, out, settings_path, connect=False, sim=False, csv=()):
         super().__init__(root, frame, notebook)
         self.out = out
         self.settings_path = settings_path
@@ -58,6 +59,8 @@ class MqttTab(TabBase):
         self._build()
         self.loading = False
         self.custom.graphs_changed(save=False)
+        if csv:
+            self._import(csv)
         if connect or sim:
             self._connect()
         root.after(200, self._poll)
@@ -130,7 +133,8 @@ class MqttTab(TabBase):
         self.fixed_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(ctl, text="Fix axis", variable=self.fixed_var,
                         command=self._mark_dirty).pack(side="left", padx=(8, 0))
-        ttk.Button(ctl, text="Clear charts", command=self._clear_charts).pack(side="left", padx=(12, 0))
+        ttk.Button(ctl, text="Import CSV...", command=self._import).pack(side="left", padx=(12, 4))
+        ttk.Button(ctl, text="Clear charts", command=self._clear_charts).pack(side="left")
         self._events_checkbox(ctl).pack(side="left", padx=12)
         ttk.Label(ctl, text="Hover a chart for values. Station readings are plotted at the time they "
                             "were taken. Hollow points: estimated time; red crosses: unknown (null).",
@@ -302,7 +306,8 @@ class MqttTab(TabBase):
                 self._add_log("warning", "the simulated broker publishes sim/... and measure-station/"
                                          "sim-01/...; none of them match the topics subscribed to")
         source = "sim" if c["sim"] else "%s:%d" % (host, port)
-        if self.series and source != self.source:
+        # Not after only imported logs (no source yet): live data joins them.
+        if self.series and self.source not in (None, source):
             self._clear_all()
             self._add_log("info", "topics and charts cleared: different broker")
         self.source = source
@@ -330,10 +335,61 @@ class MqttTab(TabBase):
         self.conn_btn.configure(text="Connect")
         self.file_var.set("Not connected")
 
+    def _log_folder(self):
+        return os.path.join(self.out, "sim") if self.sim_var.get() else self.out
+
     def _open_folder(self):
-        folder = os.path.join(self.out, "sim") if self.sim_var.get() else self.out
+        folder = self._log_folder()
         os.makedirs(folder, exist_ok=True)
         os.startfile(folder)
+
+    # imported logs ----------------------------------------------------------
+    def _import(self, paths=None):
+        """Replays logged messages onto every page, as if they had just arrived."""
+        if paths is None:
+            folder = self._log_folder()
+            paths = filedialog.askopenfilenames(
+                parent=self.root, title="Import MQTT CSV logs",
+                initialdir=os.path.abspath(folder if os.path.isdir(folder) else self.out),
+                filetypes=[("MQTT logs", "mqtt_*.csv"), ("CSV files", "*.csv"), ("All files", "*.*")])
+            if not paths:
+                return
+        try:
+            messages, skipped = read_mqtt_logs(paths)
+        except (OSError, ValueError) as e:
+            messagebox.showerror("Import CSV", str(e), parent=self.root)
+            return
+        added = already = 0
+        times = []
+        for rx, topic, retained, text in messages:
+            reading = parse_reading(text)
+            fields = reading_fields(reading) if reading else numeric_fields(text)
+            t = self._message(rx, topic, text, fields, retained, reading, live=False)
+            if t is None:
+                already += 1 if fields else 0
+            else:
+                added += 1
+                times.append(t)
+
+        names = ", ".join(os.path.basename(p) for p in paths)
+        if not messages:
+            self._add_log("warning", "no messages found in %s" % names)
+            return
+        text = "imported %d messages from %s (%s to %s)" % (
+            len(messages), names, *(datetime.fromtimestamp(m[0]).strftime("%d %b %H:%M")
+                                    for m in (messages[0], messages[-1])))
+        if already:
+            text += ", %d already shown" % already
+        if skipped:
+            text += ", %d unreadable row(s) skipped" % skipped
+        self._add_log("info", text)
+
+        # Widen the chart window if the imported data would not fit.
+        if times:
+            need = self.view_end(self.series.values(), time.time()) - min(times)
+            if self.span() is not None and self.span() < need:
+                self.window_var.set(next(w for w, s in WINDOWS if s is None or s >= need))
+        self._mark_dirty()
 
     def shutdown(self):
         if self.sub:
@@ -356,13 +412,18 @@ class MqttTab(TabBase):
             pass
         self.root.after(200, self._poll)
 
-    def _message(self, now, topic, text, fields, retained, reading):
+    def _message(self, now, topic, text, fields, retained, reading, live=True):
+        """Stores a message's values at the time they belong to, which it
+        returns; None if nothing was stored (no numbers, too many topics, or
+        a copy of values already kept). live=False: replayed from a log."""
         if not self.custom.topic_message(now, topic, text, retained):
-            return                                      # too many topics
+            return None                                 # too many topics
         # <base>/<station>/status. Only readings add a station to the list,
-        # so another device's "x/status" doesn't become one.
+        # so another device's "x/status" doesn't become one. A logged status
+        # is history: it only stands in while there is no live one.
         parts = topic.split("/")
-        if len(parts) >= 3 and parts[-1] == "status" and text.strip() in ("online", "offline"):
+        if (len(parts) >= 3 and parts[-1] == "status" and text.strip() in ("online", "offline")
+                and (live or not self.sub)):
             self.station_status[parts[-2]] = text.strip()
             self.health.dirty = True
         t, note = now, None
@@ -372,17 +433,27 @@ class MqttTab(TabBase):
             if reading["ts_src"] == "estimated":
                 note = "time estimated (clock not synced)"
             if self._duplicate(topic, fields, t):
-                return                                  # QoS 1 resend of a reading already kept
+                return None                             # QoS 1 resend, or imported and already kept
             self._reading(topic, t, reading)
+        elif not live and self._duplicate(topic, fields, t, slack=1.0):
+            # Logged times are whole seconds; the live copy had the fraction.
+            return None
         for field, v in fields.items():
             self._insert((topic, field), t, v, note)
+        return t if fields else None
 
-    def _duplicate(self, topic, fields, t):
-        for field in fields:
+    def _duplicate(self, topic, fields, t, slack=0.0):
+        """Whether these values are already kept: a point at exactly t (a
+        reading's capture time), or with slack, the same value within slack s."""
+        for field, v in fields.items():
             pts = self.series.get((topic, field))
             if pts:
-                i = bisect.bisect_left(pts, t, key=lambda p: p[0])
-                return i < len(pts) and pts[i][0] == t
+                i = bisect.bisect_left(pts, t - slack, key=lambda p: p[0])
+                while i < len(pts) and pts[i][0] <= t + slack:
+                    if not slack or pts[i][1] == v:
+                        return True
+                    i += 1
+                return False
         return False
 
     def _insert(self, key, t, v, note):
