@@ -228,3 +228,10 @@ data/sim/*.log
 # Modbus tab settings (per machine)
 modbus_settings.json
 modbus_settings.json.tmp
+
+# MQTT tab settings (per machine; may hold the broker password)
+mqtt_settings.json
+mqtt_settings.json.tmp
+
+# Claude
+.claude/

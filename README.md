@@ -1,6 +1,6 @@
 # Device Data Receiver
 
-PC software with two tabs, which can both run at the same time:
+PC software with three tabs, which can all run at the same time:
 
 - **UART**: the MQ gas sensor board's UART broadcast (`$PMQB` sentences, see
   [INTERFACE.md](https://github.com/Mescalero66/mq-board-micropython/blob/main/INTERFACE.md)).
@@ -8,6 +8,10 @@ PC software with two tabs, which can both run at the same time:
 - **Modbus**: polls registers from a Modbus TCP device (e.g. the PowerTec Pico
   environment sensor), graphs up to six of them and logs every poll to a daily CSV
   file. See [Modbus tab](#modbus-tab).
+- **MQTT**: subscribes to topics on an MQTT broker and logs every message to a
+  daily CSV file. A page per Measure Station sensor and one for its health show
+  each sensor's values, flags and status; the Custom page graphs any six values
+  from any topic. See [MQTT tab](#mqtt-tab).
 
 ## Setup
 
@@ -39,6 +43,8 @@ Double-click `run.bat`, or:
     python mqb_receiver.py data\mqb_2026-10-04.csv   # window showing an earlier log on the charts
     python mqb_receiver.py --modbus             # also start polling the saved Modbus device
     python mqb_receiver.py --modbus-sim         # Modbus tab on a simulated sensor
+    python mqb_receiver.py --mqtt               # also subscribe to the saved MQTT broker
+    python mqb_receiver.py --mqtt-sim           # MQTT tab on a simulated broker
 
 Other options: `--raw` also logs every received line verbatim; `--out DIR`
 changes the log folder (default `data/`); `--sim-speed N` speeds up the simulator.
@@ -124,6 +130,84 @@ Tick **Simulated device** (or start with `--modbus-sim`) to try it without
 hardware: a simulated environment sensor runs on this PC, and its logs go to
 `data/sim/`.
 
+## MQTT tab
+
+Subscribes to topics on an MQTT broker (MQTT 3.1.1, e.g. Mosquitto) and keeps
+receiving, logging and charting whichever tab is showing.
+
+1. Enter the **Broker** address and **Port** (1883, or 8883 with **TLS**),
+   plus a **User** and **Password** if the broker needs them. With TLS the
+   broker's certificate is checked against Windows' trusted certificates.
+2. Enter the topics to **Subscribe to**, comma-separated. `+` matches one
+   level and `#` everything below: `measure-station/+/+` receives everything
+   from every Measure Station; `#` alone subscribes to everything. **QoS** 1
+   asks the broker to resend messages that were not acknowledged; 0 is usual.
+   Then **Connect**.
+3. Choose the **Station** to show (the first one heard from is chosen for
+   you). **Show**, **Fix axis**, **Clear charts** and **Events** apply to every
+   page.
+
+### Sensor and System health pages
+
+One page per sensor of the Measure Station (Temperature, Humidity, Barometer,
+CO2, Particulates, Light, Air quality, MQ board, with its six gas sensors
+together), then **System health**. A source the station's documents don't list
+(e.g. `temperature-probe`, if it is published) gets a page of its own.
+
+- **The table at the top** has one row per source: the sensor type, when the
+  latest reading was taken and how long ago, its time source (`ts_src`), the
+  number of readings, **Details** (everything that isn't graphed: text codes,
+  flags and yes/no values, e.g. `validity`, `comp_src`, `baseline_tracking`,
+  `clock_synced`) and **Status**, which applies the interface's quality rules.
+  Amber rows need care (e.g. ENS160 warming up, SEN65 VOC/NOx warming up, a
+  provisional MQ baseline, CO2 compensated by altitude, the intake fans on, no
+  reading for 2.5 intervals, an estimated timestamp); red rows are wrong (e.g.
+  `validity: invalid`, `pm: fan_speed`, a failed MQ read or boot calibration,
+  the clock not synced, the MQ board link down, the station offline).
+- **Large graphs** show the numbers in `values`; **small graphs** show the
+  numbers in `meta` (compensation inputs and calibration figures, not
+  measurements of the air), with the newest value in their title. The MQ
+  board's six sensors share one board temperature, so it has one graph. System
+  health has no `meta`, so its six key figures are large and the rest small.
+  The graphs are worked out from the readings, so a SEN62 and a SEN65 each get
+  the graphs for what they send.
+- **Readings are plotted at the time they were taken** (`ts`), not when they
+  arrive, so a backlog sent after an outage lands where it belongs. A reading
+  delivered twice is kept once. Hollow points have an estimated time (station
+  clock not synced); red crosses are values sent as unknown (`null`, e.g. a
+  failed MQ read).
+
+### Custom page
+
+Up to six values from any topic, on graphs of your choosing. For each row,
+choose a **Value**. Every number in a message is offered: a plain-number
+payload as the topic itself (e.g. `sim/power/voltage`), and each number inside
+a JSON payload as *topic : field*, with nested fields joined by dots (e.g.
+`measure-station/mstn-2b/co2 : values.co2_ppm`). Values are listed once they
+have arrived. Give it a **Name**, **Unit** and **Scale** (the value is
+multiplied by it); the graph re-plots its whole history straight away.
+
+**Graph** (1 to 6) says which graph the value goes on; by default each row has
+its own. Rows given the same number share one graph: each line has its row's
+colour and dash (the swatch beside the row), the legend names each with its
+latest value, and hovering lists every line's value at that time. A shared
+graph has one y scale, so share values in the same unit (e.g. several
+temperatures); the title warns when the units differ. Only graphs with a value
+are drawn, side by side or in a grid as their number needs.
+
+### Connection and settings
+
+Settings, including the password, are saved in plain text to
+`mqtt_settings.json` (not committed to git) and restored next time. If the
+broker drops the connection or cannot be reached, the tab keeps retrying every
+5 s and says so once in Events. The table shows up to 1000 topics; messages on
+further topics are still logged.
+
+Tick **Simulated broker** (or start with `--mqtt-sim`) to try it without a
+broker: a simulated broker runs on this PC with a simulated Measure Station
+(`measure-station/sim-01/...`, every source in its documented format) and three
+other devices publishing to `sim/...` topics. Its logs go to `data/sim/`.
+
 ## Log files
 
 `data/mqb_YYYY-MM-DD.csv` gets one row per **new** reading. The board repeats
@@ -155,6 +239,12 @@ be read. Raw values mean any register can be graphed later, whatever the graph
 setup was. If you poll a different set of registers on the same day, a new
 file (`..._2.csv`) is started rather than mixing columns.
 
+`data/mqtt_<broker>_YYYY-MM-DD.csv` (UTF-8) gets one row per MQTT message:
+`pc_time`, `topic`, `retained` (1 = kept by the broker from before you
+subscribed) and the raw `payload` text (binary payloads as `hex:` followed by
+hex digits). Logging the whole payload means any value in it can be graphed
+later, whatever the graph setup was.
+
 ## Files
 
 | File               | Contents                                                        |
@@ -167,5 +257,11 @@ file (`..._2.csv`) is started rather than mixing columns.
 | `modbus_tab.py`    | the Modbus tab                                                  |
 | `modbus_core.py`   | Modbus TCP client, value decoding, polling thread, CSV log, settings |
 | `modbus_sim.py`    | simulated environment sensor (`python modbus_sim.py` serves it on port 5020) |
+| `mqtt_tab.py`      | the MQTT tab: connection, shared controls, stored data, and the Custom page |
+| `station_view.py`  | a sensor or System health page under the MQTT tab              |
+| `station_spec.py`  | what the Measure Station sends: pages, names and units, status rules |
+| `mqtt_core.py`     | MQTT client, topic filters, payload numbers, subscriber thread, CSV log, settings |
+| `mqtt_sim.py`      | simulated broker and devices (`python mqtt_sim.py` serves it on port 1884) |
 | `test_mqb.py`      | tests, including every example in INTERFACE.md: `python -m unittest -v` |
 | `test_modbus.py`   | Modbus tests, run against the simulated sensor over real sockets |
+| `test_mqtt.py`     | MQTT tests, run against the simulated broker over real sockets  |

@@ -5,6 +5,7 @@
     python mqb_receiver.py --cli --port COM7    console only
     python mqb_receiver.py --sim                GUI fed by a simulated board
     python mqb_receiver.py --modbus-sim         Modbus tab fed by a simulated sensor
+    python mqb_receiver.py --mqtt-sim           MQTT tab fed by a simulated broker
 
 New readings are appended to data/mqb_YYYY-MM-DD.csv (simulator runs go to
 data/sim/). See README.md for details.
@@ -112,6 +113,7 @@ def run_gui(args):
     from matplotlib.figure import Figure
     from matplotlib.lines import Line2D
     from modbus_tab import ModbusTab
+    from mqtt_tab import MqttTab
 
     class UartTab(TabBase):
         def __init__(self, root, frame, notebook):
@@ -529,14 +531,21 @@ def run_gui(args):
     style.configure("Status.TLabel", foreground=INK_2)
     notebook = ttk.Notebook(root)
     notebook.pack(fill="both", expand=True)
-    uart_frame, modbus_frame = ttk.Frame(notebook), ttk.Frame(notebook)
+    uart_frame, modbus_frame, mqtt_frame = ttk.Frame(notebook), ttk.Frame(notebook), ttk.Frame(notebook)
     notebook.add(uart_frame, text="  UART  ")
     notebook.add(modbus_frame, text="  Modbus  ")
+    notebook.add(mqtt_frame, text="  MQTT  ")
     tabs = [UartTab(root, uart_frame, notebook),
             ModbusTab(root, modbus_frame, notebook, args.out, args.modbus_settings,
-                      connect=args.modbus, sim=args.modbus_sim)]
-    if (args.modbus or args.modbus_sim) and not (args.sim or args.port or args.csv):
-        notebook.select(modbus_frame)
+                      connect=args.modbus, sim=args.modbus_sim),
+            MqttTab(root, mqtt_frame, notebook, args.out, args.mqtt_settings,
+                    connect=args.mqtt, sim=args.mqtt_sim)]
+    # Show the tab that was asked to connect; UART first, then Modbus, then MQTT.
+    if not (args.sim or args.port or args.csv):
+        if args.modbus or args.modbus_sim:
+            notebook.select(modbus_frame)
+        elif args.mqtt or args.mqtt_sim:
+            notebook.select(mqtt_frame)
 
     def close():
         for tab in tabs:
@@ -549,8 +558,8 @@ def run_gui(args):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description="Receive, display and log MQ gas sensor board broadcasts (UART) "
-                                            "and Modbus TCP devices.")
+    p = argparse.ArgumentParser(description="Receive, display and log MQ gas sensor board broadcasts (UART), "
+                                            "Modbus TCP devices and MQTT topics.")
     p.add_argument("csv", nargs="*", help="CSV logs from earlier runs to show on the charts (window only)")
     p.add_argument("--port", help="serial port, e.g. COM7")
     p.add_argument("--cli", action="store_true", help="console only, no window")
@@ -564,6 +573,12 @@ def main(argv=None):
                    help="start the Modbus tab on a simulated environment sensor")
     p.add_argument("--modbus-settings", default=os.path.join(HERE, "modbus_settings.json"),
                    help="Modbus tab settings file (default: ./modbus_settings.json)")
+    p.add_argument("--mqtt", action="store_true",
+                   help="start subscribing to the MQTT broker saved in the MQTT tab's settings")
+    p.add_argument("--mqtt-sim", action="store_true",
+                   help="start the MQTT tab on a simulated broker")
+    p.add_argument("--mqtt-settings", default=os.path.join(HERE, "mqtt_settings.json"),
+                   help="MQTT tab settings file (default: ./mqtt_settings.json)")
     p.add_argument("--sim-faults", action="store_true",
                    help="simulate a fresh board with read faults, corrupted lines, a failed MQ4 "
                         "boot calibration and a restart at 15 min uptime")

@@ -171,8 +171,9 @@ class DailyFile:
     (then _3, ...) is used, so columns never get mixed.
     """
 
-    def __init__(self, folder, prefix, ext, header=None):
+    def __init__(self, folder, prefix, ext, header=None, encoding="ascii"):
         self.folder, self.prefix, self.ext, self.header = folder, prefix, ext, header
+        self.encoding = encoding
         self.day = None
         self.fh = None
         self.path = None
@@ -196,7 +197,7 @@ class DailyFile:
             os.makedirs(self.folder, exist_ok=True)
             self.path = self._path_for(day)
             new = not os.path.exists(self.path) or os.path.getsize(self.path) == 0
-            self.fh = open(self.path, "a", newline="", encoding="ascii", errors="replace")
+            self.fh = open(self.path, "a", newline="", encoding=self.encoding, errors="replace")
             if new and self.header:
                 self.fh.write(self.header)
             self.day = day
